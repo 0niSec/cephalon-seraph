@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "cephalon-seraph"
+version = "0.1.0"
+description = ""
+authors = ["Nick <9609041+0niSec@users.noreply.github.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+discord-py = "^2.4.0"
+python-dotenv = "^1.0.1"
+httpx = "^0.27.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
