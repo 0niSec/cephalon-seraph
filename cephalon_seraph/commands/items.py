@@ -57,6 +57,54 @@ def get_damage_types_and_values(damage: dict, emojis: dict) -> str:
     )
     return damage_string
 
+def get_stat_with_emoji(stat: str, emojis: dict) -> str:
+    # Use regex to find the placeholder
+    match = re.search(r'<DT_(\w+)>(\w+)', stat)
+    if match:
+        damage_type = match.group(2).lower()  # Extract the damage type
+        emoji = emojis.get(damage_type, '')  # Get the corresponding emoji
+        print(emoji)
+        stat = stat.replace(match.group(0), emoji + match.group(2))  # Replace the placeholder with the emoji and retain the text after the placeholder
+    return stat
+
+def get_max_rank_mod_stats(level_stats: list) -> str:
+    max_rank_stats_array = level_stats[-1]
+    max_rank_stats = max_rank_stats_array.get('stats', {})
+    return "\n".join(
+        get_stat_with_emoji(stat, damage_type_emojis) for stat in max_rank_stats
+    )
+
+class ModDropdown(discord.ui.Select):
+    def __init__(self, item_data: dict):
+        self.item_data = item_data
+
+        options = [
+            discord.SelectOption(label="Basic Info"),
+            discord.SelectOption(label="Rank Stats"),
+        ]
+
+        super().__init__(placeholder="Select an option...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "Basic Info":
+            await interaction.response.edit_message(embed=await create_basic_info_mod_page(self.item_data))
+        elif self.values[0] == "Rank Stats":
+            await interaction.response.edit_message(embed=await create_rank_stats_mod_page(self.item_data))
+
+class ModView(discord.ui.View):
+    def __init__(self, item_data: dict):
+        super().__init__(timeout=10.0)
+        self.item_data = item_data
+
+        # Adds the dropdown to our view object.
+        self.add_item(ModDropdown(item_data))
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        
+        await self.message.edit(view=self)
+
 class WeaponDropdown(discord.ui.Select):
     def __init__(self, item_data: dict):
         self.item_data = item_data
@@ -79,9 +127,9 @@ class WeaponDropdown(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "Basic Info":
-            await interaction.response.edit_message(embed=await create_basic_info_page(self.item_data))
+            await interaction.response.edit_message(embed=await create_basic_info_weapon_page(self.item_data))
         elif self.values[0] == "Attack Info":
-            await interaction.response.edit_message(embed=await create_attack_info_page(self.item_data))
+            await interaction.response.edit_message(embed=await create_weapon_attack_page(self.item_data))
         elif self.values[0] == "Riven Info":
             await interaction.response.send_message(f"You selected {self.values[0]}", ephemeral=True)
         elif self.values[0] == "Incarnon Form":
@@ -101,7 +149,7 @@ class WeaponDropdownView(discord.ui.View):
         
         await self.message.edit(view=self)
 
-async def create_basic_info_page(item_data: dict):
+async def create_basic_info_weapon_page(item_data: dict):
     # Create an embed with the item information
     basic_info_embed = discord.Embed(
         title=item_data["name"],
@@ -184,7 +232,7 @@ async def create_basic_info_page(item_data: dict):
 
     return basic_info_embed
 
-async def create_attack_info_page(item_data: dict):
+async def create_weapon_attack_page(item_data: dict):
     # Create an embed with the attack information
     attack_info_embed = discord.Embed(
         title=f"{item_data.get('name', '')} - Attacks (Detailed)",
@@ -212,6 +260,60 @@ async def create_attack_info_page(item_data: dict):
 
     return attack_info_embed
 
+async def create_basic_info_mod_page(item_data: dict):
+    # Create an embed with the item information
+    basic_info_mod_embed = discord.Embed(
+        title=item_data.get("name", ""),
+        color=discord.Color.yellow(),
+        url=item_data.get("wikiaUrl", "")
+    )
+
+    basic_info_mod_embed.set_thumbnail(url=item_data.get("wikiaThumbnail", ""))
+    basic_info_mod_embed.set_footer(text="Powered by WarframeStat.us")
+
+    # Mod Info
+    basic_info_mod_embed.add_field(
+        name=f"**Mod Info**", 
+        value=(
+            f"**Type:** {item_data.get('type')}\n"
+            f"**Rarity:** {item_data.get('rarity')}\n"
+            f"**Polarity:** {get_polarity_emojis(item_data.get('polarity'), polarity_emojis)}\n"
+            f"**Base Drain:** {item_data.get('baseDrain')}\n"
+            f"**Introduced:** {item_data['introduced']['name']} - <t:{convert_date(item_data['introduced']['date'])}:D>\n"
+        ),
+        inline=False
+    )
+    basic_info_mod_embed.add_field(
+        name=f"**Max Rank Stats**",
+        value=get_max_rank_mod_stats(item_data.get('levelStats', [])),
+    )
+
+    return basic_info_mod_embed
+
+async def create_rank_stats_mod_page(item_data: dict):
+    # Create an embed with the item information
+    rank_stats_mod_embed = discord.Embed(
+        title=item_data.get("name", ""),
+        color=discord.Color.yellow(),
+        url=item_data.get("wikiaUrl", "")
+    )
+
+    rank_stats_mod_embed.set_thumbnail(url=item_data.get("wikiaThumbnail", ""))
+    rank_stats_mod_embed.set_footer(text="Powered by WarframeStat.us")
+
+    # Mod Info
+    rank_stats = item_data.get('levelStats', [])
+    for rank, rank_stat in enumerate(rank_stats):
+        rank_stats_mod_embed.add_field(
+            name=f"**Rank {rank + 1}**",
+            value="\n".join(
+                get_stat_with_emoji(stat, damage_type_emojis) for stat in rank_stat.get('stats', [])
+            ),
+            inline=False
+        )
+
+    return rank_stats_mod_embed
+
 class Items(commands.GroupCog, group_name="search"):
     """Commands for searching for items in the Warframe database"""
     def __init__(self, bot, session):
@@ -232,7 +334,7 @@ class Items(commands.GroupCog, group_name="search"):
                     item_data = await response.json()
 
                     # Create an embed with the item information
-                    basic_info_embed = await create_basic_info_page(item_data)
+                    basic_info_embed = await create_basic_info_weapon_page(item_data)
 
                     # Create a dropdown view for the user to select different options
                     weapon_dropdown_view = WeaponDropdownView(item_data)
@@ -262,37 +364,18 @@ class Items(commands.GroupCog, group_name="search"):
             # Defer the response immediately
             await interaction.response.defer()
 
+            # TODO: Get Warframe.Market Pricing Stats too
             async with self.session.get(f"https://api.warframestat.us/items/{name}/") as response:
                 
                 # Check if the request was successful
                 if response.status == 200:
                     # Parse the response
                     item_data = await response.json()
+                    embed = await create_basic_info_mod_page(item_data)
+                    mod_view = ModView(item_data)
 
-                    # Create an embed with the item information
-                    embed = discord.Embed(
-                        title=item_data.get("name", ""),
-                        color=discord.Color.yellow(),
-                        url=item_data.get("wikiaUrl", "")
-                    )
-
-                    embed.set_thumbnail(url=item_data.get("wikiaThumbnail", ""))
-                    embed.set_footer(text="Powered by WarframeStat.us")
-
-                    # Mod Info
-                    embed.add_field(
-                        name=f"**Mod Info**", 
-                        value=(
-                            f"**Type:** {item_data.get('type')}\n"
-                            f"**Rarity:** {item_data.get('rarity')}\n"
-                            f"**Category:** {item_data.get('category')}\n"
-                            f"**Polarity:** {get_polarity_emojis(item_data.get('polarity'), polarity_emojis)}\n"
-                            f"**Base Drain:** {item_data.get('baseDrain')}\n"
-                            f"**Introduced:** {item_data['introduced']['name']} - <t:{convert_date(item_data['introduced']['date'])}:D>\n"
-                        ),
-                        inline=False
-                    )
-                    await interaction.followup.send(embed=embed)
+                    await interaction.followup.send(embed=embed, view=mod_view)
+                    mod_view.message = await interaction.original_response()
                 elif response.status == 404:
                     await interaction.followup.send(f"Mod not found: {name}", ephemeral=True)
                 else:
