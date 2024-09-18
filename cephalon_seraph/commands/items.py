@@ -50,7 +50,7 @@ def convert_date(date: str) -> int:
 
 def get_damage_types_and_values(damage: dict, emojis: dict) -> str:
     damage_object = damage.get('damage', {})
-    filtered_damage = {split_camel_case(damage_type): value for damage_type, value in damage_object.items() if value != 0 and damage_type.lower() != 'total'}
+    filtered_damage = {damage_type: value for damage_type, value in damage_object.items() if value != 0 and damage_type.lower() != 'total'}
     damage_string = "\n".join(
         f"{emojis.get(damage_type.lower(), '')} **{damage_type.capitalize()}**: {round(value, 2)}"
         for damage_type, value in filtered_damage.items()
@@ -63,7 +63,6 @@ def get_stat_with_emoji(stat: str, emojis: dict) -> str:
     if match:
         damage_type = match.group(2).lower()  # Extract the damage type
         emoji = emojis.get(damage_type, '')  # Get the corresponding emoji
-        print(emoji)
         stat = stat.replace(match.group(0), emoji + match.group(2))  # Replace the placeholder with the emoji and retain the text after the placeholder
     return stat
 
@@ -113,6 +112,7 @@ class WeaponDropdown(discord.ui.Select):
             discord.SelectOption(label="Basic Info"),
             discord.SelectOption(label="Attack Info"),
             discord.SelectOption(label="Riven Info"),
+            discord.SelectOption(label="Components"),
         ]
 
         attacks = item_data.get('attacks', [])
@@ -127,13 +127,32 @@ class WeaponDropdown(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "Basic Info":
-            await interaction.response.edit_message(embed=await create_basic_info_weapon_page(self.item_data))
+            await interaction.response.edit_message(embed=await create_basic_info_weapon_page(self.item_data), view=WeaponDropdownView(self.item_data))
         elif self.values[0] == "Attack Info":
-            await interaction.response.edit_message(embed=await create_weapon_attack_page(self.item_data))
+            await interaction.response.edit_message(embed=await create_weapon_attack_page(self.item_data), view=WeaponDropdownView(self.item_data))
         elif self.values[0] == "Riven Info":
             await interaction.response.send_message(f"You selected {self.values[0]}", ephemeral=True)
+        elif self.values[0] == "Components":
+            view = WeaponDropdownView(self.item_data)
+
+            # Only add buttons for components that have their components.drops array populated
+            for component in self.item_data.get('components', []):
+                if 'count' not in component and component.get('drops') != []:
+                    view.add_item(WeaponComponentButton(self.item_data, component))
+
+            await interaction.response.edit_message(embed=await create_weapon_components_page(self.item_data), view=view)
         elif self.values[0] == "Incarnon Form":
             await interaction.response.send_message(f"You selected {self.values[0]}", ephemeral=True)
+
+class WeaponComponentButton(discord.ui.Button):
+    def __init__(self, item_data: dict, component: dict):
+        self.item_data = item_data
+        self.component = component
+
+        super().__init__(style=discord.ButtonStyle.primary, label=component.get('name'))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(embed=await create_component_drop_locations_page(self.component))
 
 class WeaponDropdownView(discord.ui.View):
     def __init__(self, item_data: dict):
@@ -149,6 +168,66 @@ class WeaponDropdownView(discord.ui.View):
         
         await self.message.edit(view=self)
 
+class ResourceDropdown(discord.ui.Select):
+    def __init__(self, item_data: dict, current_page: int = 1):
+        self.item_data = item_data
+        self.current_page = current_page
+
+        options = [
+            discord.SelectOption(label="Basic Info"),
+            discord.SelectOption(label="Drop Locations"),
+        ]
+
+        super().__init__(placeholder="Select an option...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "Basic Info":
+            await interaction.response.edit_message(embed=await create_basic_info_resource_page(self.item_data))
+        elif self.values[0] == "Drop Locations":
+            embed, view = await create_drop_locations_resource_page(self.item_data, 1)
+            await interaction.response.edit_message(embed=embed, view=view)
+
+class ResourceDropdownView(discord.ui.View):
+    def __init__(self, item_data: dict, current_page: int = 1):
+        super().__init__(timeout=10.0)
+        self.item_data = item_data
+        self.current_page = current_page
+
+        print(f"Initializing ResourceDropdownView with current_page = {self.current_page}")
+
+        # Adds the dropdown to our view object.
+        self.add_item(ResourceDropdown(item_data))
+        if len(self.item_data.get('drops', [])) > 25:
+            if self.current_page > 1:
+                print(f"Adding Previous button for page {self.current_page}")
+                self.add_item(ResourcePaginateButton(item_data, "Previous", self.current_page))
+            if self.current_page * 25 < len(self.item_data.get('drops', [])):
+                self.add_item(ResourcePaginateButton(item_data, "Next", self.current_page))
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        
+        await self.message.edit(view=self)
+
+class ResourcePaginateButton(discord.ui.Button):
+    def __init__(self, item_data: dict, action: str, current_page: int):
+        self.item_data = item_data
+        self.action = action
+        self.current_page = current_page
+
+        super().__init__(style=discord.ButtonStyle.primary, label=action)
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.action == "Next":
+            next_page = self.current_page + 1
+            embed, view = await create_drop_locations_resource_page(self.item_data, next_page)
+            await interaction.response.edit_message(embed=embed, view=view)
+        elif self.action == "Previous":
+            previous_page = self.current_page - 1
+            embed, view = await create_drop_locations_resource_page(self.item_data, previous_page)
+            await interaction.response.edit_message(embed=embed, view=view)
+
 async def create_basic_info_weapon_page(item_data: dict):
     # Create an embed with the item information
     basic_info_embed = discord.Embed(
@@ -158,7 +237,7 @@ async def create_basic_info_weapon_page(item_data: dict):
         url=item_data["wikiaUrl"],
     )
 
-    basic_info_embed.set_thumbnail(url=item_data["wikiaThumbnail"])
+    basic_info_embed.set_thumbnail(url=item_data.get("wikiaThumbnail", ""))
     basic_info_embed.set_footer(text="Powered by WarframeStat.us")
 
     basic_info = [
@@ -260,6 +339,58 @@ async def create_weapon_attack_page(item_data: dict):
 
     return attack_info_embed
 
+async def create_weapon_components_page(item_data: dict):
+    weapon_components_embed = discord.Embed(
+        title=f"{item_data.get('name', '')} - Weapon Components",
+        color=discord.Color.red(),
+        url=item_data.get('wikiaUrl', '')
+    )
+
+    weapon_components_embed.set_thumbnail(url=item_data.get('wikiaThumbnail', ''))
+    weapon_components_embed.set_footer(text="Powered by WarframeStat.us")
+
+    # The drop locations array
+    components_list = item_data.get('components', [])
+
+    for component in components_list:
+        drop_description = component.get('description', '')
+        drop_location = ''
+        if 'Location:' in drop_description:
+            drop_location = drop_description.split('Location:')[1].strip()
+        weapon_components_embed.add_field(
+            name=f"**{component.get('name', '')}**",
+            value=(
+                f"**Count:** {component.get('itemCount', 0)}\n"
+                f"**Drops At:** {drop_location}\n" if drop_location else ''
+            ),
+            inline=False
+        )
+
+    return weapon_components_embed
+
+async def create_component_drop_locations_page(component: dict):
+    component_drop_location_embed = discord.Embed(
+        title=f"{component.get('name', '')} - Drop Locations",
+        color=discord.Color.red(),
+    )
+
+    component_drop_location_embed.set_thumbnail(url=component.get('wikiaThumbnail', ''))
+    component_drop_location_embed.set_footer(text="Powered by WarframeStat.us")
+
+    # The drop locations array
+    drop_locations = component.get('drops', [])
+    for location in drop_locations:
+        component_drop_location_embed.add_field(
+            name=f"**{location.get('location', '')}**",
+            value=(
+                f"**Chance:** {round(location.get('chance', 0) * 100, 2)}%\n"
+                f"**Rarity:** {location.get('rarity', '')}\n"
+            ),
+            inline=True
+        )
+
+    return component_drop_location_embed
+
 async def create_basic_info_mod_page(item_data: dict):
     # Create an embed with the item information
     basic_info_mod_embed = discord.Embed(
@@ -314,6 +445,57 @@ async def create_rank_stats_mod_page(item_data: dict):
 
     return rank_stats_mod_embed
 
+async def create_basic_info_resource_page(item_data: dict):
+    resource_embed = discord.Embed(
+        title=item_data.get("name", ""),
+        description=f"*{item_data.get('description', '')}*",
+        color=discord.Color.blurple(),
+    )
+
+    resource_embed.set_footer(text="Powered by WarframeStat.us")
+
+    resource_embed.add_field(
+        name="**Resource Info**",
+        value=(
+            f"**Type:** {item_data.get('type', '')}\n"
+            f"**Category:** {item_data.get('category', '')}\n"
+        ),
+        inline=False
+    )
+
+    return resource_embed
+
+async def create_drop_locations_resource_page(item_data: dict, page: int = 1):
+    resource_drop_location_embed = discord.Embed(
+        title=f"{item_data.get('name', '')} - Drop Locations",
+        color=discord.Color.blurple(),
+    )
+
+    resource_drop_location_embed.set_footer(text="Powered by WarframeStat.us")
+
+    # The drop locations array
+    drop_locations = item_data.get('drops', [])
+    items_per_page = 25
+    start_index = (page - 1) * items_per_page
+    end_index = page * items_per_page
+
+    paginated_drop_locations = drop_locations[start_index:end_index]
+
+    for location in paginated_drop_locations:
+        resource_drop_location_embed.add_field(
+            name=f"**{location.get('location', '')}**",
+            value=(
+                f"**Location:** {location.get('location', '')}\n"
+                f"**Chance:** {round(location.get('chance', 0) * 100, 2)}%\n"
+                f"**Rarity:** {location.get('rarity', '')}\n"
+                f"**Type:** {location.get('type', '')}\n"
+            ),
+            inline=True
+        )
+
+    view = ResourceDropdownView(item_data, current_page=page)
+    return resource_drop_location_embed, view
+
 class Items(commands.GroupCog, group_name="search"):
     """Commands for searching for items in the Warframe database"""
     def __init__(self, bot, session):
@@ -321,18 +503,22 @@ class Items(commands.GroupCog, group_name="search"):
         self.session = session
 
     @app_commands.command(name="weapon", description="Search for a weapon in the Warframe database")
-    async def weapon(self, interaction: discord.Interaction, name: str):
+    async def weapon(self, interaction: discord.Interaction, weapon: str):
         try:
             # Defer the response immediately
             await interaction.response.defer()
 
-            async with self.session.get(f"https://api.warframestat.us/items/{name}/") as response:
+            async with self.session.get(f"https://api.warframestat.us/items/{weapon}/") as response:
                 
                 # Check if the request was successful
                 if response.status == 200:
                     # Parse the response
                     item_data = await response.json()
 
+                    # Return an error if the category is not a weapon
+                    if item_data.get('category') == 'Warframes':
+                        return await interaction.followup.send(f"{weapon.capitalize()} is a Warframe, not a weapon. If you meant to search for a Warframe, try the `/warframe` command instead.", ephemeral=True)
+                        
                     # Create an embed with the item information
                     basic_info_embed = await create_basic_info_weapon_page(item_data)
 
@@ -348,7 +534,7 @@ class Items(commands.GroupCog, group_name="search"):
                 # Handle items not found gracefully
                 elif response.status == 404:
                     # Let the user know through an ephemeral message
-                    await interaction.followup.send(f"Weapon not found: {name}", ephemeral=True)
+                    await interaction.followup.send(f"Weapon not found: {weapon}", ephemeral=True)
                 else:
                     # Log the error response
                     print(f"Error Response: {response.text}")
@@ -357,15 +543,14 @@ class Items(commands.GroupCog, group_name="search"):
             print(f"Error fetching item: {e}")
             await interaction.response.send_message(f"An error occurred while fetching the item: {e}")
 
-
     @app_commands.command(name="mod", description="Search for a mod in the Warframe database")
-    async def mod(self, interaction: discord.Interaction, name: str):
+    async def mod(self, interaction: discord.Interaction, mod: str):
         try:
             # Defer the response immediately
             await interaction.response.defer()
 
             # TODO: Get Warframe.Market Pricing Stats too
-            async with self.session.get(f"https://api.warframestat.us/items/{name}/") as response:
+            async with self.session.get(f"https://api.warframestat.us/items/{mod}/") as response:
                 
                 # Check if the request was successful
                 if response.status == 200:
@@ -377,7 +562,7 @@ class Items(commands.GroupCog, group_name="search"):
                     await interaction.followup.send(embed=embed, view=mod_view)
                     mod_view.message = await interaction.original_response()
                 elif response.status == 404:
-                    await interaction.followup.send(f"Mod not found: {name}", ephemeral=True)
+                    await interaction.followup.send(f"Mod not found: {mod}", ephemeral=True)
                 else:
                     # Log the error response
                     print(f"Error Response: {response.text}")
@@ -385,6 +570,31 @@ class Items(commands.GroupCog, group_name="search"):
         except aiohttp.ClientError as e:
             print(f"Error fetching item: {e}")
             await interaction.response.send_message(f"An error occurred while fetching the item: {e}")
+
+    @app_commands.command(name="resource", description="Search for a resource in the Warframe database")
+    async def resource(self, interaction: discord.Interaction, resource: str):
+        try:
+            # Defer the response immediately
+            await interaction.response.defer()
+
+            async with self.session.get(f"https://api.warframestat.us/items/{resource}/") as response:
+                if response.status == 200:
+                    item_data = await response.json()
+
+                    embed = await create_basic_info_resource_page(item_data)
+
+                    resource_dropdown_view = ResourceDropdownView(item_data)
+
+                    await interaction.followup.send(embed=embed, view=resource_dropdown_view)
+                    resource_dropdown_view.message = await interaction.original_response()
+                elif response.status == 404:
+                    await interaction.followup.send(f"Resource not found: {resource}", ephemeral=True)
+        except aiohttp.ClientError as e:
+            print(f"Error fetching item: {e}")
+            await interaction.response.send_message(f"An error occurred while fetching the item: {e}")
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            await interaction.response.send_message(f"An error occurred: {e}")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Items(bot, bot.session))
