@@ -199,3 +199,4 @@ pyrightconfig.json
 
 /.env
 /discord.log
+cephalon_seraph/commands/__pycache__/items.cpython-311.pyc

@@ -156,7 +156,7 @@ class WeaponComponentButton(discord.ui.Button):
 
 class WeaponDropdownView(discord.ui.View):
     def __init__(self, item_data: dict):
-        super().__init__(timeout=10.0)
+        super().__init__(timeout=30.0)
         self.item_data = item_data
 
         # Adds the dropdown to our view object.
