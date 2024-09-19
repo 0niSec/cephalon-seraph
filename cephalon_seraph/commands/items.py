@@ -36,6 +36,21 @@ def split_camel_case(word: str) -> str:
         return word.capitalize()
     return re.sub(r'(?<!^)(?=[A-Z])', ' ', word).title()
 
+def format_description(description):
+    # Insert newline after colon
+    description = re.sub(r':', ':\n', description)
+
+    # Format `xmxxs` strings
+    description = re.sub(r'(\d+)m(\d+)s', r'\1m. \2s', description)
+
+    # Add newline for `+1 Arcane Revive`
+    description = description.replace('+1 Arcane Revive', '\n+1 Arcane Revive')
+
+    # Trim leading and trailing whitespace
+    description = description.strip()
+
+    return description
+
 # Function for obtaining the polarities and joining them with a comma
 def get_polarities(polarities: list[str] | str) -> str:
     """Returns a comma separated string of polarities
@@ -121,184 +136,57 @@ def get_max_rank_mod_stats(level_stats: list[str]) -> str:
         get_stat_with_emoji(stat, damage_type_emojis) for stat in max_rank_stats
     )
 
+# We have to create a new function to get the max rank arcane stats
+# The arcane stats in the API are returned in some weird format that we have to parse differently 
+# and I don't want to do that in the mod function
+def get_max_rank_arcane_stats(level_stats: list[str]) -> str:
+    """Gets the max rank stats of an arcane
+    
+    Parameters:
+        level_stats (list): The list of level stats of the arcane
+
+    Returns:
+        str: A new line separated string containing the max rank stats of the arcane
+    """
+    max_rank_stats_array = level_stats[-1]
+    max_rank_stats_description = max_rank_stats_array.get('stats', {})[0]
+    print(max_rank_stats_description)
+    return "".join(
+        get_stat_with_emoji(format_description(max_rank_stats_description), damage_type_emojis)
+    )
+
 async def fetch_component_price(session, component_name):
     url = f"https://api.warframe.market/v1/items/{component_name}/orders"
     async with session.get(url) as response:
         if response.status == 200:
+            # Get all orders
             orders = await response.json()
-            ingame_orders = [order for order in orders['payload']['orders'] if order['user']['status'].lower() == 'ingame']
-            lowest_price_orders = sorted(ingame_orders, key=lambda x: x['platinum'])[:3]
+
+            # Filter and sort the sell orders in one pass
+            sell_orders = [
+                order for order in orders['payload']['orders']
+                if order['order_type'].lower() == 'sell' and order['user']['status'].lower() == 'ingame'
+            ]
+            sell_orders.sort(key=lambda x: x['platinum'])
+
+            # Get the lowest 3 prices
+            lowest_price_orders = sell_orders[:3]
+
             lowest_price = [
                 f"{order['platinum']} {currency_emojis.get('platinum')} - {order['user']['ingame_name']} | {order['user']['status'].upper()}"
+                + (f" | Rank: {order['mod_rank']}" if 'mod_rank' in order else "")
                 for order in lowest_price_orders
             ]
+
         elif response.status == 404:
             lowest_price = ["No prices found"]
+
         elif not response:
             lowest_price = ["Failed to fetch prices"]
+
         else:
             lowest_price = ["Failed to fetch prices"]
     return lowest_price
-
-class ModDropdown(discord.ui.Select):
-    def __init__(self, item_data: dict):
-        self.item_data = item_data
-
-        options = [
-            discord.SelectOption(label="Basic Info"),
-            discord.SelectOption(label="Rank Stats"),
-        ]
-
-        super().__init__(placeholder="Select an option...", options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        if self.values[0] == "Basic Info":
-            await interaction.response.edit_message(embed=await create_basic_info_mod_page(self.item_data))
-        elif self.values[0] == "Rank Stats":
-            await interaction.response.edit_message(embed=await create_rank_stats_mod_page(self.item_data))
-
-class ModView(discord.ui.View):
-    def __init__(self, item_data: dict):
-        super().__init__(timeout=10.0)
-        self.item_data = item_data
-
-        # Adds the dropdown to our view object.
-        self.add_item(ModDropdown(item_data))
-
-    async def on_timeout(self) -> None:
-        for item in self.children:
-            item.disabled = True
-        
-        await self.message.edit(view=self)
-
-class WeaponDropdown(discord.ui.Select):
-    def __init__(self, item_data: dict):
-        self.item_data = item_data
-
-        options = [
-            discord.SelectOption(label="Basic Info"),
-            discord.SelectOption(label="Attack Info"),
-            discord.SelectOption(label="Riven Info"),
-            discord.SelectOption(label="Components"),
-        ]
-
-        attacks = item_data.get('attacks', [])
-        if any(attack.get('name') == 'Incarnon Form' for attack in attacks):
-            options.append(
-                discord.SelectOption(
-                    label="Incarnon Form"
-                )
-            )
-
-        super().__init__(placeholder="Select an option...", options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        if self.values[0] == "Basic Info":
-            await interaction.response.edit_message(embed=await create_basic_info_weapon_page(self.item_data), view=WeaponDropdownView(self.item_data))
-        
-        elif self.values[0] == "Attack Info":
-            await interaction.response.edit_message(embed=await create_weapon_attack_page(self.item_data), view=WeaponDropdownView(self.item_data))
-        
-        elif self.values[0] == "Riven Info":
-            # TODO: Add Riven Info
-            await interaction.response.send_message(f"You selected {self.values[0]}", ephemeral=True)
-
-        elif self.values[0] == "Components":
-            view = WeaponDropdownView(self.item_data)
-
-            # Only add buttons for components that have their components drops array populated
-            for component in self.item_data.get('components', []):
-                if 'count' not in component and component.get('drops') != []:
-                    view.add_item(WeaponComponentButton(self.item_data, component))
-
-            await interaction.response.edit_message(embed=await create_weapon_components_page(self.item_data), view=view)
-
-        elif self.values[0] == "Incarnon Form":
-            await interaction.response.send_message(f"You selected {self.values[0]}", ephemeral=True)
-
-class WeaponComponentButton(discord.ui.Button):
-    def __init__(self, item_data: dict, component: dict):
-        self.item_data = item_data
-        self.component = component
-
-        super().__init__(style=discord.ButtonStyle.primary, label=component.get('name'))
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(embed=await create_component_drop_locations_page(self.component))
-
-class WeaponDropdownView(discord.ui.View):
-    def __init__(self, item_data: dict):
-        super().__init__(timeout=30.0)
-        self.item_data = item_data
-
-        # Adds the dropdown to our view object.
-        self.add_item(WeaponDropdown(item_data))
-
-    async def on_timeout(self) -> None:
-        for item in self.children:
-            item.disabled = True
-        
-        await self.message.edit(view=self)
-
-class ResourceDropdown(discord.ui.Select):
-    def __init__(self, item_data: dict, current_page: int = 1):
-        self.item_data = item_data
-        self.current_page = current_page
-
-        options = [
-            discord.SelectOption(label="Basic Info"),
-            discord.SelectOption(label="Drop Locations"),
-        ]
-
-        super().__init__(placeholder="Select an option...", options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        if self.values[0] == "Basic Info":
-            await interaction.response.edit_message(embed=await create_basic_info_resource_page(self.item_data))
-        elif self.values[0] == "Drop Locations":
-            embed, view = await create_drop_locations_resource_page(self.item_data, 1)
-            await interaction.response.edit_message(embed=embed, view=view)
-
-class ResourceDropdownView(discord.ui.View):
-    def __init__(self, item_data: dict, current_page: int = 1):
-        super().__init__(timeout=10.0)
-        self.item_data = item_data
-        self.current_page = current_page
-
-        print(f"Initializing ResourceDropdownView with current_page = {self.current_page}")
-
-        # Adds the dropdown to our view object.
-        self.add_item(ResourceDropdown(item_data))
-        if len(self.item_data.get('drops', [])) > 25:
-            if self.current_page > 1:
-                print(f"Adding Previous button for page {self.current_page}")
-                self.add_item(ResourcePaginateButton(item_data, "Previous", self.current_page))
-            if self.current_page * 25 < len(self.item_data.get('drops', [])):
-                self.add_item(ResourcePaginateButton(item_data, "Next", self.current_page))
-
-    async def on_timeout(self) -> None:
-        for item in self.children:
-            item.disabled = True
-        
-        await self.message.edit(view=self)
-
-class ResourcePaginateButton(discord.ui.Button):
-    def __init__(self, item_data: dict, action: str, current_page: int):
-        self.item_data = item_data
-        self.action = action
-        self.current_page = current_page
-
-        super().__init__(style=discord.ButtonStyle.primary, label=action)
-
-    async def callback(self, interaction: discord.Interaction):
-        if self.action == "Next":
-            next_page = self.current_page + 1
-            embed, view = await create_drop_locations_resource_page(self.item_data, next_page)
-            await interaction.response.edit_message(embed=embed, view=view)
-        elif self.action == "Previous":
-            previous_page = self.current_page - 1
-            embed, view = await create_drop_locations_resource_page(self.item_data, previous_page)
-            await interaction.response.edit_message(embed=embed, view=view)
 
 async def create_basic_info_weapon_page(item_data: dict):
     # Create an embed with the item information
@@ -484,6 +372,10 @@ async def create_component_drop_locations_page(component: dict):
     return component_drop_location_embed
 
 async def create_basic_info_mod_page(item_data: dict):
+    # Get the pricing data
+    async with aiohttp.ClientSession() as session:
+        prices = await fetch_component_price(session, snake_case_term(item_data.get('name')))
+
     # Create an embed with the item information
     basic_info_mod_embed = discord.Embed(
         title=item_data.get("name", ""),
@@ -492,7 +384,9 @@ async def create_basic_info_mod_page(item_data: dict):
     )
 
     basic_info_mod_embed.set_thumbnail(url=item_data.get("wikiaThumbnail", ""))
-    basic_info_mod_embed.set_footer(text="Powered by WarframeStat.us")
+    basic_info_mod_embed.set_footer(text="Powered by WarframeStat.us and warframe.market\nPricing statistics may be delayed.")
+
+    mod_max_rank = len(item_data.get('levelStats', [])) - 1
 
     # Mod Info
     basic_info_mod_embed.add_field(
@@ -502,6 +396,7 @@ async def create_basic_info_mod_page(item_data: dict):
             f"**Rarity:** {item_data.get('rarity')}\n"
             f"**Polarity:** {get_polarity_emojis(item_data.get('polarity'), polarity_emojis)}\n"
             f"**Base Drain:** {item_data.get('baseDrain')}\n"
+            f"**Max Rank:** {mod_max_rank}\n"
             f"**Introduced:** {item_data['introduced']['name']} - <t:{convert_date(item_data['introduced']['date'])}:D>\n"
         ),
         inline=False
@@ -511,6 +406,13 @@ async def create_basic_info_mod_page(item_data: dict):
         value=get_max_rank_mod_stats(item_data.get('levelStats', [])),
     )
 
+    basic_info_mod_embed.add_field(
+        name=f"**Prices**",
+        value="\n".join([f"- {p}" for p in prices]),
+        inline=False
+    )
+
+    await session.close()
     return basic_info_mod_embed
 
 async def create_rank_stats_mod_page(item_data: dict):
@@ -528,7 +430,7 @@ async def create_rank_stats_mod_page(item_data: dict):
     rank_stats = item_data.get('levelStats', [])
     for rank, rank_stat in enumerate(rank_stats):
         rank_stats_mod_embed.add_field(
-            name=f"**Rank {rank + 1}**",
+            name=f"**Rank {rank}**",
             value="\n".join(
                 get_stat_with_emoji(stat, damage_type_emojis) for stat in rank_stat.get('stats', [])
             ),
@@ -538,9 +440,10 @@ async def create_rank_stats_mod_page(item_data: dict):
     return rank_stats_mod_embed
 
 async def create_basic_info_resource_page(item_data: dict):
+    descripton = item_data.get('descripton') if item_data.get('description') != "" else None
     resource_embed = discord.Embed(
         title=item_data.get("name", ""),
-        description=f"*{item_data.get('description', '')}*",
+        description=descripton,
         color=discord.Color.blurple(),
     )
 
@@ -554,6 +457,24 @@ async def create_basic_info_resource_page(item_data: dict):
         ),
         inline=False
     )
+
+    # Check if the item is craftable
+    # We can check if there is a components array which should indicate that the item can be crafted
+    if item_data.get('components'):
+        components = item_data.get('components', [])
+        for component in components:
+            if "Location:" in component.get('description', ''): 
+                drop_location = component['description'].split('Location:')[1].strip()
+            component_name = component.get('name', '')
+            component_count = component.get('itemCount', 0)
+            resource_embed.add_field(
+                name=f"**{component_name}**",
+                value=(
+                    f"**Count:** {component_count}\n"
+                    f"**Location:** {drop_location}\n"
+                ),
+                inline=False
+            )
 
     return resource_embed
 
@@ -588,6 +509,275 @@ async def create_drop_locations_resource_page(item_data: dict, page: int = 1):
     view = ResourceDropdownView(item_data, current_page=page)
     return resource_drop_location_embed, view
 
+async def create_basic_info_arcane_page(item_data: dict):
+    # Get the pricing data
+    async with aiohttp.ClientSession() as session:
+        prices = await fetch_component_price(session, snake_case_term(item_data.get('name')))
+
+    arcane_embed = discord.Embed(
+        title=item_data.get('name', ''),
+        description=item_data.get('description', ''),
+        color=discord.Color.purple(),
+        url=item_data.get('wikiaUrl', ''),
+    )
+
+    arcane_embed.set_thumbnail(url=item_data.get('wikiaThumbnail', ''))
+    arcane_embed.set_footer(text="Powered by WarframeStat.us and warframe.market\nPricing statistics may be delayed.")
+
+    arcane_max_rank = len(item_data.get('levelStats')) - 1
+
+    arcane_embed.add_field(
+        name="**Arcane Info**",
+        value=(
+            f"**Type:** {item_data.get('type', '')}\n"
+            f"**Rarity:** {item_data.get('rarity', '')}\n"
+            f"**Max Rank:** {arcane_max_rank}\n"
+        ),
+        inline=False
+    )
+
+    arcane_embed.add_field(
+        name="**Max Rank Stats**",
+        value=get_max_rank_arcane_stats(item_data.get('levelStats', [])),
+        inline=False
+    )
+
+    arcane_embed.add_field(
+        name="**Prices**",
+        value="\n".join([f"- {p}" for p in prices]),
+        inline=False
+    )
+
+    await session.close()
+    return arcane_embed
+
+async def create_rank_stats_arcane_page(item_data: dict):
+    arcane_embed = discord.Embed(
+        title=item_data.get('name', ''),
+        description=item_data.get('description', ''),
+        color=discord.Color.purple(),
+        url=item_data.get('wikiaUrl', ''),
+    )
+
+    arcane_embed.set_thumbnail(url=item_data.get('wikiaThumbnail', ''))
+    arcane_embed.set_footer(text="Powered by WarframeStat.us")
+
+    arcane_max_rank = len(item_data.get('levelStats')) - 1
+
+    arcane_embed.add_field(
+        name="**Arcane Info**",
+        value=(
+            f"**Type:** {item_data.get('type', '')}\n"
+            f"**Rarity:** {item_data.get('rarity', '')}\n"
+            f"**Max Rank:** {arcane_max_rank}\n"
+        ),
+        inline=False
+    )
+
+    rank_stats = item_data.get('levelStats', [])
+    for rank, rank_stat in enumerate(rank_stats):
+        stat_description = rank_stat.get('stats', [])
+        if stat_description:
+            formatted_stat = format_description(stat_description[0])
+            arcane_embed.add_field(
+                name=f"**Rank {rank}**",
+                value=get_stat_with_emoji(formatted_stat, damage_type_emojis),
+                inline=False
+            )
+
+    return arcane_embed
+
+class ModDropdown(discord.ui.Select):
+    def __init__(self, item_data: dict):
+        self.item_data = item_data
+
+        options = [
+            discord.SelectOption(label="Basic Info"),
+            discord.SelectOption(label="Rank Stats"),
+        ]
+
+        super().__init__(placeholder="Select an option...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "Basic Info":
+            await interaction.response.edit_message(embed=await create_basic_info_mod_page(self.item_data))
+        elif self.values[0] == "Rank Stats":
+            await interaction.response.edit_message(embed=await create_rank_stats_mod_page(self.item_data))
+
+class ModView(discord.ui.View):
+    def __init__(self, item_data: dict):
+        super().__init__(timeout=10.0)
+        self.item_data = item_data
+
+        # Adds the dropdown to our view object.
+        self.add_item(ModDropdown(item_data))
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        
+        await self.message.edit(view=self)
+
+class WeaponDropdown(discord.ui.Select):
+    def __init__(self, item_data: dict):
+        self.item_data = item_data
+
+        options = [
+            discord.SelectOption(label="Basic Info"),
+            discord.SelectOption(label="Attack Info"),
+            discord.SelectOption(label="Riven Info"),
+            discord.SelectOption(label="Components"),
+        ]
+
+        attacks = item_data.get('attacks', [])
+        if any(attack.get('name') == 'Incarnon Form' for attack in attacks):
+            options.append(
+                discord.SelectOption(
+                    label="Incarnon Form"
+                )
+            )
+
+        super().__init__(placeholder="Select an option...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "Basic Info":
+            await interaction.response.edit_message(embed=await create_basic_info_weapon_page(self.item_data), view=WeaponDropdownView(self.item_data))
+        
+        elif self.values[0] == "Attack Info":
+            await interaction.response.edit_message(embed=await create_weapon_attack_page(self.item_data), view=WeaponDropdownView(self.item_data))
+        
+        elif self.values[0] == "Riven Info":
+            # TODO: Add Riven Info
+            await interaction.response.send_message(f"You selected {self.values[0]}", ephemeral=True)
+
+        elif self.values[0] == "Components":
+            view = WeaponDropdownView(self.item_data)
+
+            # Only add buttons for components that have their components drops array populated
+            for component in self.item_data.get('components', []):
+                if 'count' not in component and component.get('drops') != []:
+                    view.add_item(WeaponComponentButton(self.item_data, component))
+
+            await interaction.response.edit_message(embed=await create_weapon_components_page(self.item_data), view=view)
+
+        elif self.values[0] == "Incarnon Form":
+            await interaction.response.send_message(f"You selected {self.values[0]}", ephemeral=True)
+
+class WeaponComponentButton(discord.ui.Button):
+    def __init__(self, item_data: dict, component: dict):
+        self.item_data = item_data
+        self.component = component
+
+        super().__init__(style=discord.ButtonStyle.primary, label=component.get('name'))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(embed=await create_component_drop_locations_page(self.component))
+
+class WeaponDropdownView(discord.ui.View):
+    def __init__(self, item_data: dict):
+        super().__init__(timeout=30.0)
+        self.item_data = item_data
+
+        # Adds the dropdown to our view object.
+        self.add_item(WeaponDropdown(item_data))
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        
+        await self.message.edit(view=self)
+
+class ResourceDropdown(discord.ui.Select):
+    def __init__(self, item_data: dict, current_page: int = 1):
+        self.item_data = item_data
+        self.current_page = current_page
+
+        options = [
+            discord.SelectOption(label="Basic Info"),
+            discord.SelectOption(label="Drop Locations"),
+        ]
+
+        super().__init__(placeholder="Select an option...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "Basic Info":
+            await interaction.response.edit_message(embed=await create_basic_info_resource_page(self.item_data))
+        elif self.values[0] == "Drop Locations":
+            embed, view = await create_drop_locations_resource_page(self.item_data, 1)
+            await interaction.response.edit_message(embed=embed, view=view)
+
+class ResourceDropdownView(discord.ui.View):
+    def __init__(self, item_data: dict, current_page: int = 1):
+        super().__init__(timeout=10.0)
+        self.item_data = item_data
+        self.current_page = current_page
+
+        # Adds the dropdown to our view object.
+        self.add_item(ResourceDropdown(item_data))
+
+        if len(self.item_data.get('drops', [])) > 25:
+            if self.current_page > 1:
+                self.add_item(ResourcePaginateButton(item_data, "Previous", self.current_page))
+            if self.current_page * 25 < len(self.item_data.get('drops', [])):
+                self.add_item(ResourcePaginateButton(item_data, "Next", self.current_page))
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        
+        await self.message.edit(view=self)
+
+class ResourcePaginateButton(discord.ui.Button):
+    def __init__(self, item_data: dict, action: str, current_page: int):
+        self.item_data = item_data
+        self.action = action
+        self.current_page = current_page
+
+        super().__init__(style=discord.ButtonStyle.primary, label=action)
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.action == "Next":
+            next_page = self.current_page + 1
+            embed, view = await create_drop_locations_resource_page(self.item_data, next_page)
+            await interaction.response.edit_message(embed=embed, view=view)
+        elif self.action == "Previous":
+            previous_page = self.current_page - 1
+            embed, view = await create_drop_locations_resource_page(self.item_data, previous_page)
+            await interaction.response.edit_message(embed=embed, view=view)
+
+class ArcaneDropdown(discord.ui.Select):
+    def __init__(self, item_data: dict):
+        self.item_data = item_data
+
+        options = [
+            discord.SelectOption(label="Basic Info"),
+            discord.SelectOption(label="Rank Stats"),
+            discord.SelectOption(label="Drop Locations"),
+        ]
+
+        super().__init__(placeholder="Select an option...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "Basic Info":
+            await interaction.response.edit_message(embed=await create_basic_info_arcane_page(self.item_data))
+        elif self.values[0] == "Rank Stats":
+            await interaction.response.edit_message(embed=await create_rank_stats_arcane_page(self.item_data))
+        elif self.values[0] == "Drop Locations":
+            await interaction.response.send_message(content="You selected Drop Locations", ephemeral=True)
+
+class ArcaneView(discord.ui.View):
+    def __init__(self, item_data: dict):
+        super().__init__(timeout=10.0)
+        self.item_data = item_data
+
+        # Adds the dropdown to our view object.
+        self.add_item(ArcaneDropdown(item_data))
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        
+        await self.message.edit(view=self)
 
 class Items(commands.GroupCog, group_name="search"):
     """Commands for searching for items in the Warframe database"""
@@ -595,7 +785,7 @@ class Items(commands.GroupCog, group_name="search"):
         self.bot = bot
         self.session = session
 
-    @app_commands.command(name="weapon", description="Search for a weapon in the Warframe database")
+    @app_commands.command(name="weapon", description="Search for the closest matching weapon name")
     async def weapon(self, interaction: discord.Interaction, weapon: str):
         try:
             # Defer the response immediately
@@ -614,11 +804,7 @@ class Items(commands.GroupCog, group_name="search"):
                     # Return a message to the user if they search for something other than a weapon
                     # We use the same endpoint to retrieve both items and weapons, but are handling them differently
                     if item_data.get('category') not in [category.value for category in WEAPON_CATEGORY]:
-                        return await interaction.followup.send(f"{weapon.capitalize()} is not a weapon. This command is for searching weapons. For anything else, please refer to the `/help`.", ephemeral=True)
-
-                    # Return an error if the category is not a weapon
-                    if item_data.get('category') == 'Warframes':
-                        return await interaction.followup.send(f"{weapon.capitalize()} is a Warframe, not a weapon. If you meant to search for a Warframe, try the `/warframe` command instead.", ephemeral=True)
+                        return await interaction.followup.send(f"{weapon.capitalize()} is not a weapon. For help with commands, use `/help`.", ephemeral=True)
                         
                     # Create an embed with the item information
                     basic_info_embed = await create_basic_info_weapon_page(item_data)
@@ -644,7 +830,7 @@ class Items(commands.GroupCog, group_name="search"):
             print(f"Error fetching item: {e}")
             await interaction.response.send_message(f"An error occurred while fetching the item: {e}")
 
-    @app_commands.command(name="mod", description="Search for a mod in the Warframe database")
+    @app_commands.command(name="mod", description="Search for the closest matching mod name")
     async def mod(self, interaction: discord.Interaction, mod: str):
         try:
             # Defer the response immediately
@@ -661,11 +847,18 @@ class Items(commands.GroupCog, group_name="search"):
                 elif response.status == 200:
                     # Parse the response
                     item_data = await response.json()
+
+                    if item_data.get('category') != 'Mods':
+                        return await interaction.followup.send(f"{mod.capitalize()} is not a mod. For help with commands, use `/help`.", ephemeral=True)
+
                     embed = await create_basic_info_mod_page(item_data)
+
                     mod_view = ModView(item_data)
 
                     await interaction.followup.send(embed=embed, view=mod_view)
+
                     mod_view.message = await interaction.original_response()
+
                 elif response.status == 404:
                     await interaction.followup.send(f"Mod not found: {mod}", ephemeral=True)
                 else:
@@ -676,8 +869,9 @@ class Items(commands.GroupCog, group_name="search"):
             print(f"Error fetching item: {e}")
             await interaction.response.send_message(f"An error occurred while fetching the item: {e}")
 
-    @app_commands.command(name="resource", description="Search for a resource in the Warframe database")
-    async def resource(self, interaction: discord.Interaction, resource: str):
+    @app_commands.command(name="misc")
+    async def miscellaneous(self, interaction: discord.Interaction, resource: str):
+        """Search for items that do not fall into the other command categores such as resources or other craftable items."""
         try:
             # Defer the response immediately
             await interaction.response.defer()
@@ -709,6 +903,35 @@ class Items(commands.GroupCog, group_name="search"):
         except Exception as e:
             print(f"An error occurred: {e}")
             await interaction.response.send_message(f"An error occurred: {e}")
+
+    @app_commands.command(name="arcane", description="Search for the closest matching arcane name")
+    async def arcane(self, interaction: discord.Interaction, arcane_name: str):
+        try:
+            # Defer the response immediately
+            await interaction.response.defer()
+
+            async with self.session.get(f"https://api.warframestat.us/items/{arcane_name}/") as response:
+
+                # Check if the response is truthy
+                if not response:
+                    return await interaction.followup.send(f"Request did not return anything!")
+
+                # Process a successful response code (200)
+                elif response.status == 200:
+                    item_data = await response.json()
+
+                    embed = await create_basic_info_arcane_page(item_data)
+
+                    arcane_view = ArcaneView(item_data)
+
+                    await interaction.followup.send(embed=embed, view=arcane_view)
+                    arcane_view.message = await interaction.original_response()
+
+                elif response.status == 404:
+                    await interaction.followup.send(f"Arcane not found: {arcane_name}", ephemeral=True)
+        except aiohttp.ClientError as e:
+            print(f"Error fetching item: {e}")
+            await interaction.response.send_message(f"An error occurred while fetching the item: {e}")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Items(bot, bot.session))
