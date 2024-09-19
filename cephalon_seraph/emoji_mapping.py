@@ -28,3 +28,8 @@ polarity_emojis= {
     "any": "<:any:1284877114017054911>",
     "fusion": "<:fusion:1284877131972608132>",
 }
+
+currency_emojis = {
+    "platinum": "<:platinum:1286096657988980808>",
+    "ducats": "<:ducats:1286096673453506633>",
+}
