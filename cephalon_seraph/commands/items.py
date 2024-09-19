@@ -150,7 +150,6 @@ def get_max_rank_arcane_stats(level_stats: list[str]) -> str:
     """
     max_rank_stats_array = level_stats[-1]
     max_rank_stats_description = max_rank_stats_array.get('stats', {})[0]
-    print(max_rank_stats_description)
     return "".join(
         get_stat_with_emoji(format_description(max_rank_stats_description), damage_type_emojis)
     )
