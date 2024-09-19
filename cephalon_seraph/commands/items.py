@@ -1,16 +1,34 @@
+import asyncio
 import discord
 import aiohttp
-from emoji_mapping import damage_type_emojis, polarity_emojis
+from emoji_mapping import damage_type_emojis, polarity_emojis, currency_emojis
 from discord.ext import commands
 from discord import app_commands
 from datetime import datetime
+from enum import Enum
 import re
 
-item_embed: discord.Embed = discord.Embed(
-    title="Item Information",
-    description="Information about the item",
-    color=discord.Color.blurple()
-)
+class WEAPON_CATEGORY(Enum):
+    PRIMARY: str = "Primary"
+    SECONDARY: str = "Secondary"
+    MELEE: str = "Melee"
+
+def snake_case_term(term: str) -> str:
+    """Converts a camel case term to snake case
+    
+    Parameters:
+        term (str): The term to convert
+    
+    Returns:
+        str: The term converted to snake case
+    """
+    # Convert to lowercase and replace spaces with underscores
+    term = term.lower().replace(' ', '_')
+
+    # Remove any extra underscores
+    term = re.sub(r'_+', '_', term)
+
+    return term
 
 # Function to split camel case words (e.g. "DamagePerShot" -> "Damage Per Shot")
 def split_camel_case(word: str) -> str:
@@ -19,7 +37,15 @@ def split_camel_case(word: str) -> str:
     return re.sub(r'(?<!^)(?=[A-Z])', ' ', word).title()
 
 # Function for obtaining the polarities and joining them with a comma
-def get_polarities(polarities: list | str) -> str:
+def get_polarities(polarities: list[str] | str) -> str:
+    """Returns a comma separated string of polarities
+    
+    Parameters:
+        polarities (list | str): The polarities of the item
+
+    Returns:
+        str: A comma separated string of polarities
+    """
     if isinstance(polarities, list):
         return ", ".join(polarities)
     elif isinstance(polarities, str):
@@ -27,7 +53,7 @@ def get_polarities(polarities: list | str) -> str:
     else:
         return ""
     
-def get_polarity_emojis(polarities: list | str, emojis: dict) -> str:
+def get_polarity_emojis(polarities: list[str] | str, emojis: dict) -> str:
     if isinstance(polarities, str):
         polarities = polarities.split(", ")
     return ", ".join(
@@ -39,7 +65,7 @@ def convert_date(date: str) -> int:
     
     Can be used to convert the "introduced" date of an item to a Unix timestamp for Discord formatting with <t:UNIX_TIMESTAMP:D>
 
-    Args:
+    Parameters:
         date (str): The date string in the format "YYYY-MM-DD"
     
     Returns:
@@ -58,6 +84,20 @@ def get_damage_types_and_values(damage: dict, emojis: dict) -> str:
     return damage_string
 
 def get_stat_with_emoji(stat: str, emojis: dict) -> str:
+    """Returns the stat with the corresponding emoji from the emojis dict
+    
+    This function is used to replace placeholders in the stat string with the corresponding emoji.
+
+    Example:
+        <DT_FIRE>Heat -> :heat:id_from_dict: Heat
+
+    Parameters:
+        stat (str): The stat string with placeholders
+        emojis (dict): The dictionary containing the emoji mappings
+
+    Returns:
+        str: The stat string with the placeholders replaced with the corresponding emoji
+    """
     # Use regex to find the placeholder
     match = re.search(r'<DT_(\w+)>(\w+)', stat)
     if match:
@@ -66,12 +106,39 @@ def get_stat_with_emoji(stat: str, emojis: dict) -> str:
         stat = stat.replace(match.group(0), emoji + match.group(2))  # Replace the placeholder with the emoji and retain the text after the placeholder
     return stat
 
-def get_max_rank_mod_stats(level_stats: list) -> str:
+def get_max_rank_mod_stats(level_stats: list[str]) -> str:
+    """Gets the max rank stats of a mod
+    
+    Parameters:
+        level_stats (list): The list of level stats of the mod
+
+    Returns:
+        str: A new line separated string containing the max rank stats of the mod
+    """
     max_rank_stats_array = level_stats[-1]
     max_rank_stats = max_rank_stats_array.get('stats', {})
     return "\n".join(
         get_stat_with_emoji(stat, damage_type_emojis) for stat in max_rank_stats
     )
+
+async def fetch_component_price(session, component_name):
+    url = f"https://api.warframe.market/v1/items/{component_name}/orders"
+    async with session.get(url) as response:
+        if response.status == 200:
+            orders = await response.json()
+            ingame_orders = [order for order in orders['payload']['orders'] if order['user']['status'].lower() == 'ingame']
+            lowest_price_orders = sorted(ingame_orders, key=lambda x: x['platinum'])[:3]
+            lowest_price = [
+                f"{order['platinum']} {currency_emojis.get('platinum')} - {order['user']['ingame_name']} | {order['user']['status'].upper()}"
+                for order in lowest_price_orders
+            ]
+        elif response.status == 404:
+            lowest_price = ["No prices found"]
+        elif not response:
+            lowest_price = ["Failed to fetch prices"]
+        else:
+            lowest_price = ["Failed to fetch prices"]
+    return lowest_price
 
 class ModDropdown(discord.ui.Select):
     def __init__(self, item_data: dict):
@@ -128,19 +195,24 @@ class WeaponDropdown(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "Basic Info":
             await interaction.response.edit_message(embed=await create_basic_info_weapon_page(self.item_data), view=WeaponDropdownView(self.item_data))
+        
         elif self.values[0] == "Attack Info":
             await interaction.response.edit_message(embed=await create_weapon_attack_page(self.item_data), view=WeaponDropdownView(self.item_data))
+        
         elif self.values[0] == "Riven Info":
+            # TODO: Add Riven Info
             await interaction.response.send_message(f"You selected {self.values[0]}", ephemeral=True)
+
         elif self.values[0] == "Components":
             view = WeaponDropdownView(self.item_data)
 
-            # Only add buttons for components that have their components.drops array populated
+            # Only add buttons for components that have their components drops array populated
             for component in self.item_data.get('components', []):
                 if 'count' not in component and component.get('drops') != []:
                     view.add_item(WeaponComponentButton(self.item_data, component))
 
             await interaction.response.edit_message(embed=await create_weapon_components_page(self.item_data), view=view)
+
         elif self.values[0] == "Incarnon Form":
             await interaction.response.send_message(f"You selected {self.values[0]}", ephemeral=True)
 
@@ -242,7 +314,7 @@ async def create_basic_info_weapon_page(item_data: dict):
 
     basic_info = [
         f"**Type:** {item_data.get('type')}\n",
-        f"**Mastery Rank:** {item_data.get('masteryReq')} <:mr1:1284008524338429952>\n" if item_data.get('masteryReq') is not None else "0",
+        f"**Mastery Rank:** {item_data.get('masteryReq')} <:mastery_rank:1286096712577978388>\n" if item_data.get('masteryReq') is not None else "0",
         f"**Category:** {item_data.get('category')} - {split_camel_case(item_data.get('productCategory'))}\n",
         f"**Polarities:** {get_polarity_emojis(item_data.get('polarities'), polarity_emojis)}\n" if item_data.get('polarities') is not None else "",
         f"**Riven Disposition:** {item_data.get('disposition')}\n" if item_data.get('disposition') is not None else "",
@@ -340,6 +412,7 @@ async def create_weapon_attack_page(item_data: dict):
     return attack_info_embed
 
 async def create_weapon_components_page(item_data: dict):
+    # Create an embed with the weapon components information 
     weapon_components_embed = discord.Embed(
         title=f"{item_data.get('name', '')} - Weapon Components",
         color=discord.Color.red(),
@@ -347,25 +420,43 @@ async def create_weapon_components_page(item_data: dict):
     )
 
     weapon_components_embed.set_thumbnail(url=item_data.get('wikiaThumbnail', ''))
-    weapon_components_embed.set_footer(text="Powered by WarframeStat.us")
+    weapon_components_embed.set_footer(text="Powered by WarframeStat.us and warframe.market")
 
     # The drop locations array
     components_list = item_data.get('components', [])
+    component_names = [f"{snake_case_term(item_data.get('name'))}_{snake_case_term(component.get('name'))}" for component in components_list]
+    print(component_names)
 
-    for component in components_list:
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_component_price(session, component_name) for component_name in component_names]
+        prices = await asyncio.gather(*tasks)
+
+    for component, price in zip(components_list, prices):
+        # Define the drop location using the description
+        # Warframestat.us returns the location in the description
         drop_description = component.get('description', '')
         drop_location = ''
+
+        # Check if the description contains the location
         if 'Location:' in drop_description:
             drop_location = drop_description.split('Location:')[1].strip()
+        
+        # Define the fields for the component
+        weapon_components_fields = [
+            f"**Count** {component.get('itemCount', 0)}\n"
+            f"**Drops At:** {drop_location}\n" if drop_location else ''
+            f"**Ducats:** {component.get('ducats')} {currency_emojis.get('ducats')}\n"
+            f"**Prices:**\n" + "\n".join(price) if price else ' '  
+        ]
+
+        # Add the component to the embed
         weapon_components_embed.add_field(
             name=f"**{component.get('name', '')}**",
-            value=(
-                f"**Count:** {component.get('itemCount', 0)}\n"
-                f"**Drops At:** {drop_location}\n" if drop_location else ''
-            ),
+            value="".join(weapon_components_fields),
             inline=False
         )
 
+    await session.close()
     return weapon_components_embed
 
 async def create_component_drop_locations_page(component: dict):
@@ -509,11 +600,19 @@ class Items(commands.GroupCog, group_name="search"):
             await interaction.response.defer()
 
             async with self.session.get(f"https://api.warframestat.us/items/{weapon}/") as response:
+
+                if not response:
+                    return await interaction.followup.send(f"Request did not return anything!")
                 
                 # Check if the request was successful
                 if response.status == 200:
                     # Parse the response
                     item_data = await response.json()
+
+                    # Return a message to the user if they search for something other than a weapon
+                    # We use the same endpoint to retrieve both items and weapons, but are handling them differently
+                    if item_data.get('category') not in [category.value for category in WEAPON_CATEGORY]:
+                        return await interaction.followup.send(f"{weapon.capitalize()} is not a weapon. This command is for searching weapons. For anything else, please refer to the `/help`.", ephemeral=True)
 
                     # Return an error if the category is not a weapon
                     if item_data.get('category') == 'Warframes':
