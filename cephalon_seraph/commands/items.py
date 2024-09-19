@@ -425,9 +425,10 @@ async def create_weapon_components_page(item_data: dict):
     # The drop locations array
     components_list = item_data.get('components', [])
     component_names = [f"{snake_case_term(item_data.get('name'))}_{snake_case_term(component.get('name'))}" for component in components_list]
-    print(component_names)
 
     async with aiohttp.ClientSession() as session:
+        # Fetch the prices for each component
+        # We define an array of tasks for aiohttp to fetch the prices for each component
         tasks = [fetch_component_price(session, component_name) for component_name in component_names]
         prices = await asyncio.gather(*tasks)
 
@@ -446,7 +447,7 @@ async def create_weapon_components_page(item_data: dict):
             f"**Count** {component.get('itemCount', 0)}\n"
             f"**Drops At:** {drop_location}\n" if drop_location else ''
             f"**Ducats:** {component.get('ducats')} {currency_emojis.get('ducats')}\n"
-            f"**Prices:**\n" + "\n".join(price) if price else ' '  
+            f"**Prices:**\n" + "\n".join([f"- {p}" for p in price]) if price else ' '  
         ]
 
         # Add the component to the embed
@@ -587,6 +588,7 @@ async def create_drop_locations_resource_page(item_data: dict, page: int = 1):
     view = ResourceDropdownView(item_data, current_page=page)
     return resource_drop_location_embed, view
 
+
 class Items(commands.GroupCog, group_name="search"):
     """Commands for searching for items in the Warframe database"""
     def __init__(self, bot, session):
@@ -605,7 +607,7 @@ class Items(commands.GroupCog, group_name="search"):
                     return await interaction.followup.send(f"Request did not return anything!")
                 
                 # Check if the request was successful
-                if response.status == 200:
+                elif response.status == 200:
                     # Parse the response
                     item_data = await response.json()
 
@@ -650,9 +652,13 @@ class Items(commands.GroupCog, group_name="search"):
 
             # TODO: Get Warframe.Market Pricing Stats too
             async with self.session.get(f"https://api.warframestat.us/items/{mod}/") as response:
+
+                # Check if the response object is truthy
+                if not response:
+                    return await interaction.followup.send(f"Request did not return anything!")
                 
                 # Check if the request was successful
-                if response.status == 200:
+                elif response.status == 200:
                     # Parse the response
                     item_data = await response.json()
                     embed = await create_basic_info_mod_page(item_data)
@@ -677,7 +683,13 @@ class Items(commands.GroupCog, group_name="search"):
             await interaction.response.defer()
 
             async with self.session.get(f"https://api.warframestat.us/items/{resource}/") as response:
-                if response.status == 200:
+
+                # Check if the response is truthy
+                if not response:
+                    return await interaction.followup.send(f"Request did not return anything!")
+
+                # Process a successful response code (200)
+                elif response.status == 200:
                     item_data = await response.json()
 
                     embed = await create_basic_info_resource_page(item_data)
@@ -686,11 +698,14 @@ class Items(commands.GroupCog, group_name="search"):
 
                     await interaction.followup.send(embed=embed, view=resource_dropdown_view)
                     resource_dropdown_view.message = await interaction.original_response()
+
                 elif response.status == 404:
                     await interaction.followup.send(f"Resource not found: {resource}", ephemeral=True)
+
         except aiohttp.ClientError as e:
             print(f"Error fetching item: {e}")
             await interaction.response.send_message(f"An error occurred while fetching the item: {e}")
+
         except Exception as e:
             print(f"An error occurred: {e}")
             await interaction.response.send_message(f"An error occurred: {e}")
